@@ -105,6 +105,7 @@
         - backend.yaml
         - frontend.yaml
         - servicemonitor.yaml
+        - grafana-dashboard.yaml        
 
     - name: Remplacer le username Docker Hub dans les fichiers
       replace:
