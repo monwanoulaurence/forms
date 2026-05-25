@@ -1,0 +1,9 @@
+dockerhub_username: lau229
+backend_image: "lau229/auth-backend:latest"
+frontend_image: "lau229/auth-frontend:latest"
+k8s_namespace: production
+app_dir: /home/ubuntu/k8s
+grafana_password: devops2024
+grafana_nodeport: 31000
+prometheus_nodeport: 31090
+app_nodeport: 30080

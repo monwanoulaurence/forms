@@ -1,0 +1,245 @@
+---
+# infra/ansible/setup-k8s.yml
+# Playbook complet — repart de zéro et reconstruit tout
+# Usage : ansible-playbook setup-k8s.yml -i inventory.ini
+
+- name: "ÉTAPE 1 — Installer K3s sur le Master"
+  hosts: k8s_master
+  become: true
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Vérifier si K3s est déjà installé
+      command: k3s --version
+      register: k3s_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Installer K3s sur le master
+      shell: curl -sfL https://get.k3s.io | sh -
+      when: k3s_check.rc != 0
+
+    - name: Attendre que K3s soit prêt
+      wait_for:
+        port: 6443
+        host: localhost
+        delay: 5
+        timeout: 60
+
+    - name: Récupérer le token K3s
+      slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_token_raw
+
+    - name: Stocker le token pour le worker
+      set_fact:
+        k3s_token: "{{ k3s_token_raw.content | b64decode | trim }}"
+
+    - name: Récupérer l'IP du master
+      set_fact:
+        master_ip: "{{ ansible_host }}"
+
+    - name: Vérifier que le master est Ready
+      shell: kubectl get nodes
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: nodes_output
+      changed_when: false
+
+    - name: Afficher les nodes
+      debug:
+        msg: "{{ nodes_output.stdout }}"
+
+# ──────────────────────────────────────────────────────────────────
+- name: "ÉTAPE 2 — Installer K3s sur le Worker"
+  hosts: k8s_worker
+  become: true
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Vérifier si K3s agent est déjà installé
+      command: k3s --version
+      register: k3s_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Installer K3s agent sur le worker
+      shell: >
+        curl -sfL https://get.k3s.io |
+        K3S_URL=https://{{ hostvars[groups['k8s_master'][0]]['master_ip'] }}:6443
+        K3S_TOKEN={{ hostvars[groups['k8s_master'][0]]['k3s_token'] }}
+        sh -
+      when: k3s_check.rc != 0
+
+    - name: Attendre que l'agent démarre
+      systemd:
+        name: k3s-agent
+        state: started
+        enabled: true
+
+# ──────────────────────────────────────────────────────────────────
+- name: "ÉTAPE 3 — Déployer l'application sur Kubernetes"
+  hosts: k8s_master
+  become: true
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Créer le dossier k8s
+      file:
+        path: "{{ app_dir }}/base"
+        state: directory
+        mode: "0755"
+
+    - name: Copier les fichiers Kubernetes
+      copy:
+        src: "../../k8s/base/{{ item }}"
+        dest: "{{ app_dir }}/base/{{ item }}"
+        mode: "0644"
+      loop:
+        - namespaces.yaml
+        - secret.yaml
+        - db.yaml
+        - backend.yaml
+        - frontend.yaml
+        - servicemonitor.yaml
+
+    - name: Remplacer le username Docker Hub dans les fichiers
+      replace:
+        path: "{{ app_dir }}/base/{{ item }}"
+        regexp: "DOCKERHUB_USERNAME"
+        replace: "{{ dockerhub_username }}"
+      loop:
+        - backend.yaml
+        - frontend.yaml
+
+    - name: Créer les namespaces
+      shell: kubectl apply -f {{ app_dir }}/base/namespaces.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Déployer les secrets
+      shell: kubectl apply -f {{ app_dir }}/base/secret.yaml -n {{ k8s_namespace }}
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Déployer la base de données
+      shell: kubectl apply -f {{ app_dir }}/base/db.yaml -n {{ k8s_namespace }}
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Attendre que la BDD soit prête
+      shell: kubectl rollout status deployment/auth-db -n {{ k8s_namespace }} --timeout=120s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Déployer le backend
+      shell: kubectl apply -f {{ app_dir }}/base/backend.yaml -n {{ k8s_namespace }}
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Déployer le frontend
+      shell: kubectl apply -f {{ app_dir }}/base/frontend.yaml -n {{ k8s_namespace }}
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Attendre que le backend soit prêt
+      shell: kubectl rollout status deployment/auth-backend -n {{ k8s_namespace }} --timeout=120s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Attendre que le frontend soit prêt
+      shell: kubectl rollout status deployment/auth-frontend -n {{ k8s_namespace }} --timeout=120s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Ajouter le label sur le service backend
+      shell: kubectl label svc auth-backend -n {{ k8s_namespace }} app=auth-backend --overwrite
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Vérifier les pods
+      shell: kubectl get pods -n {{ k8s_namespace }}
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: pods_output
+      changed_when: false
+
+    - name: Afficher les pods
+      debug:
+        msg: "{{ pods_output.stdout }}"
+
+# ──────────────────────────────────────────────────────────────────
+- name: "ÉTAPE 4 — Installer Prometheus + Grafana"
+  hosts: k8s_master
+  become: true
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Installer Helm
+      shell: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Ajouter le repo Prometheus
+      shell: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      ignore_errors: true
+
+    - name: Mettre à jour les repos Helm
+      shell: helm repo update
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Vérifier si monitoring est déjà installé
+      shell: helm list -n monitoring
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: helm_list
+      changed_when: false
+
+    - name: Installer kube-prometheus-stack
+      shell: >
+        helm install monitoring prometheus-community/kube-prometheus-stack
+        --namespace monitoring
+        --create-namespace
+        --set grafana.adminPassword={{ grafana_password }}
+        --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      when: "'monitoring' not in helm_list.stdout"
+
+    - name: Attendre que Grafana soit prêt
+      shell: kubectl rollout status deployment/monitoring-grafana -n monitoring --timeout=180s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Exposer Grafana en NodePort
+      shell: >
+        kubectl patch svc monitoring-grafana -n monitoring
+        -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":3000,"nodePort":{{ grafana_nodeport }}}]}}'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Exposer Prometheus en NodePort
+      shell: >
+        kubectl patch svc monitoring-kube-prometheus-prometheus -n monitoring
+        -p '{"spec":{"type":"NodePort","ports":[{"port":9090,"targetPort":9090,"nodePort":{{ prometheus_nodeport }}}]}}'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Déployer le ServiceMonitor
+      shell: kubectl apply -f {{ app_dir }}/base/servicemonitor.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: "✅ Déploiement terminé !"
+      debug:
+        msg:
+          - "Application : http://{{ ansible_host }}:{{ app_nodeport }}"
+          - "Grafana     : http://{{ ansible_host }}:{{ grafana_nodeport }} (admin/{{ grafana_password }})"
+          - "Prometheus  : http://{{ ansible_host }}:{{ prometheus_nodeport }}"

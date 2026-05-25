@@ -1,0 +1,169 @@
+---
+# k8s/base/grafana-dashboard.yaml
+# Dashboard Grafana stocké dans Kubernetes
+# Chargé automatiquement au démarrage de Grafana
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-app-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"    # Label qui dit à Grafana de charger ce dashboard
+data:
+  auth-app-dashboard.json: |
+    {
+      "title": "DevOps Auth — Supervision",
+      "uid": "devops-auth-001",
+      "timezone": "browser",
+      "refresh": "10s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Inscriptions totales",
+          "type": "stat",
+          "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+          "options": { "colorMode": "background", "graphMode": "area" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null }
+                ]
+              }
+            }
+          },
+          "targets": [{
+            "expr": "sum(app_registrations_total)",
+            "legendFormat": "Inscriptions",
+            "datasource": { "type": "prometheus" }
+          }]
+        },
+        {
+          "id": 2,
+          "title": "Connexions réussies",
+          "type": "stat",
+          "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+          "options": { "colorMode": "background", "graphMode": "area" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null }
+                ]
+              }
+            }
+          },
+          "targets": [{
+            "expr": "sum(app_logins_success_total)",
+            "legendFormat": "Connexions OK",
+            "datasource": { "type": "prometheus" }
+          }]
+        },
+        {
+          "id": 3,
+          "title": "Tentatives échouées",
+          "type": "stat",
+          "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+          "options": { "colorMode": "background", "graphMode": "area" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 1 },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            }
+          },
+          "targets": [{
+            "expr": "sum(app_logins_failed_total)",
+            "legendFormat": "Échecs",
+            "datasource": { "type": "prometheus" }
+          }]
+        },
+        {
+          "id": 4,
+          "title": "Utilisateurs en base de données",
+          "type": "stat",
+          "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+          "options": { "colorMode": "background", "graphMode": "area" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "blue", "value": null }
+                ]
+              }
+            }
+          },
+          "targets": [{
+            "expr": "sum(app_users_registered_total)",
+            "legendFormat": "Utilisateurs",
+            "datasource": { "type": "prometheus" }
+          }]
+        },
+        {
+          "id": 5,
+          "title": "Temps de réponse moyen API (secondes)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+          "targets": [{
+            "expr": "rate(app_http_request_duration_seconds_sum[5m]) / rate(app_http_request_duration_seconds_count[5m])",
+            "legendFormat": "{{route}}",
+            "datasource": { "type": "prometheus" }
+          }]
+        },
+        {
+          "id": 6,
+          "title": "Requêtes API par route",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+          "targets": [{
+            "expr": "rate(app_http_request_duration_seconds_count[5m])",
+            "legendFormat": "{{method}} {{route}} {{status}}",
+            "datasource": { "type": "prometheus" }
+          }]
+        },
+        {
+          "id": 7,
+          "title": "Pods Kubernetes en production",
+          "type": "stat",
+          "gridPos": { "x": 0, "y": 12, "w": 8, "h": 4 },
+          "targets": [{
+            "expr": "count(kube_pod_info{namespace=\"production\"})",
+            "legendFormat": "Pods actifs",
+            "datasource": { "type": "prometheus" }
+          }]
+        },
+        {
+          "id": 8,
+          "title": "CPU utilisé par l'app",
+          "type": "timeseries",
+          "gridPos": { "x": 8, "y": 12, "w": 8, "h": 4 },
+          "targets": [{
+            "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"production\"}[5m])) by (pod)",
+            "legendFormat": "{{pod}}",
+            "datasource": { "type": "prometheus" }
+          }]
+        },
+        {
+          "id": 9,
+          "title": "RAM utilisée par l'app",
+          "type": "timeseries",
+          "gridPos": { "x": 16, "y": 12, "w": 8, "h": 4 },
+          "targets": [{
+            "expr": "sum(container_memory_usage_bytes{namespace=\"production\"}) by (pod)",
+            "legendFormat": "{{pod}}",
+            "datasource": { "type": "prometheus" }
+          }]
+        }
+      ],
+      "schemaVersion": 36
+    }
