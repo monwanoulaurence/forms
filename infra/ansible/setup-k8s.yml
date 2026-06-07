@@ -1,7 +1,5 @@
 ---
-# infra/ansible/setup-k8s.yml
-# Playbook complet — repart de zéro et reconstruit tout
-# Usage : ansible-playbook setup-k8s.yml -i inventory.ini
+
 
 - name: "ÉTAPE 1 — Installer K3s sur le Master"
   hosts: k8s_master
@@ -237,8 +235,54 @@
       shell: kubectl apply -f {{ app_dir }}/base/servicemonitor.yaml
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+    - name: Ajouter le repo Grafana pour Loki
+      shell: helm repo add grafana https://grafana.github.io/helm-charts
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      ignore_errors: true
 
-    - name: "✅ Déploiement terminé !"
+    - name: Mettre à jour les repos Helm
+      shell: helm repo update
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Vérifier si Loki est déjà installé
+      shell: helm list -n monitoring
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: helm_list_loki
+      changed_when: false
+
+    - name: Installer Loki + Promtail
+      shell: >
+        helm install loki grafana/loki-stack
+        --namespace monitoring
+        --set promtail.enabled=true
+        --set loki.enabled=true
+        --set grafana.enabled=false
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      when: "'loki' not in helm_list_loki.stdout"
+
+    - name: Attendre que Loki soit prêt
+      shell: kubectl rollout status statefulset/loki -n monitoring --timeout=120s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Configurer Loki comme datasource dans Grafana
+      shell: |
+        kubectl exec -n monitoring deployment/monitoring-grafana -- \
+        curl -s -X POST http://admin:{{ grafana_password }}@localhost:3000/api/datasources \
+        -H "Content-Type: application/json" \
+        -d '{"name":"Loki","type":"loki","url":"http://loki.monitoring.svc:3100","access":"proxy","isDefault":false}'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      ignore_errors: true
+
+
+
+
+    - name: " Déploiement terminé !"
       debug:
         msg:
           - "Application : http://{{ ansible_host }}:{{ app_nodeport }}"
