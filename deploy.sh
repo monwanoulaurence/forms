@@ -86,10 +86,10 @@ ansible-playbook infra/ansible/setup-k8s.yml -i infra/ansible/inventory.ini
 
 
 echo ""
-echo "📊 Déploiement du dashboard Grafana..."
+echo " Déploiement du dashboard Grafana..."
 ssh -i ~/.ssh/id_ed25519 ubuntu@${MASTER_IP} "sudo chown -R ubuntu:ubuntu ~/k8s"
 ssh -i ~/.ssh/id_ed25519 ubuntu@${MASTER_IP} "sudo kubectl apply -f ~/k8s/base/grafana-dashboard.yaml"
-echo "✅ Dashboard Grafana déployé"
+echo " Dashboard Grafana déployé"
 
 
 
